@@ -82,4 +82,57 @@ def detect_vwap_flip(candles):
     v2 = get_vwap(candles[mid:])
     if not v1 or not v2:
         return False
-    slope_up = v2 > v1 and c_
+    slope_up = v2 > v1
+    last_close = candles[-1]["close"]
+    return (slope_up and last_close > v2) or (not slope_up and last_close < v2)
+
+
+def check_signals():
+    now = datetime.now(timezone.utc)
+    # Trigger only 10 minutes before each hourly close
+    if now.minute < 50:
+        return
+
+    try:
+        binance_data = fetch_binance()
+        bybit_data = fetch_bybit()
+
+        fakeout = detect_fakeout(binance_data) and detect_fakeout(bybit_data)
+        vwapflip = detect_vwap_flip(binance_data) and detect_vwap_flip(bybit_data)
+        delta, imbalance = get_orderflow_snapshot()
+
+        if fakeout or vwapflip:
+            msg = (
+                f"⚡ *BTC 1H Signal Alert* ⚡\n"
+                f"Time (UTC): {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"Exchange Confluence: BinanceUS ✅  Bybit ✅\n"
+                f"Fakeout: {'✅' if fakeout else '❌'}\n"
+                f"VWAP Flip: {'✅' if vwapflip else '❌'}\n\n"
+                f"Order Flow Delta: {delta:.2f} | Imbalance: {imbalance:.1f}%\n\n"
+                f"_Signal generated 10 minutes before hourly close._"
+            )
+
+            if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+
+            print(msg)
+
+    except Exception as e:
+        print(f"⚠️ Error checking signals: {e}")
+
+
+if __name__ == "__main__":
+    print("✅ BTC 1H Signal Bot started — monitoring Binance US + Bybit (UTC)")
+    while True:
+        try:
+            check_signals()
+            time.sleep(600)  # checks every 10 minutes
+        except Exception as e:
+            print(f"⚠️ Error in main loop: {e}")
+            time.sleep(60)
+
+
