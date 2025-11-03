@@ -114,9 +114,25 @@ def send_telegram(text):
 # === Core check ===
 def check_signals():
     now = datetime.now(timezone.utc)
-    # Run only 10 minutes before hourly close (e.g., 12:50, 13:50, ...)
-    if now.minute < 50:
-        return
+
+    # TEMPORARY TEST MODE: always trigger immediately
+    print("🚀 Test mode active — sending Telegram alert now.")
+
+    msg = (
+        f"⚡ *BTC 1H Test Alert* ⚡\n"
+        f"Time (UTC): {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+        f"This is a test message confirming your bot and Telegram setup work correctly ✅"
+    )
+
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+
+    print("✅ Test message sent successfully.")
+
 
     try:
         bnb  = fetch_binance()
