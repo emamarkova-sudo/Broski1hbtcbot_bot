@@ -1,84 +1,85 @@
 #!/usr/bin/env python3
-# BTC 1H Telegram Signal Bot (text-only)
-# Simplified: Binance data + Telegram alerts
+# BTC 1H Signal Bot (text-only alerts)
+# Confluence signals for BTC/USDT across Binance US and Bybit
+# Triggers 10 minutes before each UTC hourly close when both exchanges confirm
 
-import os, time, requests
-from datetime import datetime, timezone
+import os, time, math, requests
+from datetime import datetime, timezone, timedelta
 
-SYMBOL = "BTCUSDT"
-INTERVAL = "1h"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-POLL_SECONDS = 60
-RANGE_LOOKBACK = 24
-VOL_SPIKE_MULTIPLIER = 1.8
+BINANCE_US = "https://api.binance.us/api/v3/klines"
+BYBIT = "https://api.bybit.com/v5/market/kline"
+BYBIT_ORDERFLOW = "https://api.bybit.com/v5/market/orderbook"
 
-BINANCE = "https://api.binance.com"
-TG = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else ""
+SYMBOL = "BTCUSDT"
+INTERVAL = "60"
+LOOKBACK = 24
+VOL_SPIKE_MULT = 1.8
 
-def fetch_klines(symbol="BTCUSDT", interval="1h", limit=200):
-    url = f"{BINANCE}/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=10)
+# === Helper functions ===
+def fetch_binance():
+    p = {"symbol": SYMBOL, "interval": "1h", "limit": LOOKBACK + 1}
+    r = requests.get(BINANCE_US, params=p, timeout=10)
     r.raise_for_status()
-    return [
-        {"open_time": int(row[0]), "open": float(row[1]), "high": float(row[2]),
-         "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]),
-         "close_time": int(row[6])}
-        for row in r.json()
-    ]
+    j = r.json()
+    return [{"time": int(x[0]) // 1000,
+             "open": float(x[1]), "high": float(x[2]),
+             "low": float(x[3]), "close": float(x[4]),
+             "vol": float(x[5])} for x in j]
 
-def sma(values, n): return sum(values[-n:]) / n if len(values) >= n else None
+def fetch_bybit():
+    p = {"category": "linear", "symbol": SYMBOL, "interval": INTERVAL, "limit": LOOKBACK + 1}
+    r = requests.get(BYBIT, params=p, timeout=10)
+    r.raise_for_status()
+    j = r.json()["result"]["list"]
+    out = []
+    for x in reversed(j):
+        out.append({
+            "time": int(x["start"]),
+            "open": float(x["open"]), "high": float(x["high"]),
+            "low": float(x["low"]), "close": float(x["close"]),
+            "vol": float(x["volume"])
+        })
+    return out
 
-def compute_range(klines, lookback=24):
-    closed = klines[:-1]
-    if len(closed) < lookback: return None, None
-    w = closed[-lookback:]
-    return max(k["high"] for k in w), min(k["low"] for k in w)
+def get_vwap(candles):
+    tot_vol, tot_vp = 0, 0
+    for c in candles:
+        typical = (c["high"] + c["low"] + c["close"]) / 3
+        tot_vp += typical * c["vol"]
+        tot_vol += c["vol"]
+    return tot_vp / tot_vol if tot_vol else None
 
-def detect_fakeout(klines, rh, rl):
-    if len(klines) < 30: return None
-    last = klines[-2]
-    vols = [k["volume"] for k in klines[:-1]]
-    vol_sma = sma(vols, 20)
-    vol_spike = vol_sma and last["volume"] > VOL_SPIKE_MULTIPLIER * vol_sma
-    if rh and last["high"] > rh and last["close"] < rh and vol_spike:
-        return ("Bearish", rh, last, vol_sma)
-    if rl and last["low"] < rl and last["close"] > rl and vol_spike:
-        return ("Bullish", rl, last, vol_sma)
-    return None
-
-def send_tg(msg):
-    if not TG or not TELEGRAM_CHAT_ID:
-        print("[DRY]", msg); return
+def get_orderflow_snapshot():
     try:
-        r = requests.post(f"{TG}/sendMessage",
-            data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=10)
-        if r.status_code != 200: print("TG error:", r.text)
-    except Exception as e: print("TG exc:", e)
+        p = {"category": "linear", "symbol": SYMBOL, "limit": 200}
+        r = requests.get(BYBIT_ORDERFLOW, params=p, timeout=5)
+        r.raise_for_status()
+        j = r.json()["result"]["b"]
+        bid_sum = sum(float(x[1]) for x in j)
+        ask_sum = sum(float(x[1]) for x in r.json()["result"]["a"])
+        delta = bid_sum - ask_sum
+        imb = (bid_sum / (ask_sum + bid_sum)) * 100 if (ask_sum + bid_sum) else 0
+        return delta, imb
+    except Exception:
+        return None, None
 
-def main():
-    send_tg("✅ <b>BTC 1H bot started</b>")
-    last_ts = None
-    while True:
-        try:
-            k = fetch_klines(SYMBOL, INTERVAL, 200)
-            rh, rl = compute_range(k, RANGE_LOOKBACK)
-            fake = detect_fakeout(k, rh, rl)
-            if fake:
-                side, lvl, last, vsma = fake
-                if last_ts != last["close_time"]:
-                    msg = (f"🚨 <b>BTC 1H {side} Fakeout</b>\n"
-                           f"Level: ${lvl:,.0f}\n"
-                           f"Close: ${last['close']:,.0f} | High: ${last['high']:,.0f} | Low: ${last['low']:,.0f}\n"
-                           f"Vol: {last['volume']:,.0f} vs 20SMA {vsma:,.0f}\n"
-                           "Bias: Setup forming – wait for retest.")
-                    send_tg(msg)
-                    last_ts = last["close_time"]
-        except Exception as e:
-            send_tg(f"❗Error: {e}")
-        time.sleep(POLL_SECONDS)
+def detect_fakeout(candles):
+    highs = [x["high"] for x in candles[:-1]]
+    lows = [x["low"] for x in candles[:-1]]
+    last = candles[-1]
+    range_high, range_low = max(highs), min(lows)
+    vols = [x["vol"] for x in candles[:-1]]
+    avg_vol = sum(vols) / len(vols)
+    cond_up = last["high"] > range_high and last["close"] < range_high and last["vol"] > avg_vol * VOL_SPIKE_MULT
+    cond_down = last["low"] < range_low and last["close"] > range_low and last["vol"] > avg_vol * VOL_SPIKE_MULT
+    return cond_up or cond_down
 
-if __name__ == "__main__":
-    main()
+def detect_vwap_flip(candles):
+    mid = len(candles) // 2
+    v1 = get_vwap(candles[:mid])
+    v2 = get_vwap(candles[mid:])
+    if not v1 or not v2:
+        return False
+    slope_up = v2 > v1 and c_
