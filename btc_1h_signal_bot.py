@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "1h"
-TELEGRAM_BOT_TOKEN = os.getenv("8278425461:AAGrM3joAUSK3V0eFt2WXY80Mjex3D1mpO0", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("5042733315", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 POLL_SECONDS = 60
 RANGE_LOOKBACK = 24
 VOL_SPIKE_MULTIPLIER = 1.8
